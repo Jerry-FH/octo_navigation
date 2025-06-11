@@ -45,6 +45,13 @@
 #include <mbf_octo_core/octo_planner.h>
 #include <mbf_msgs/action/get_path.hpp>
 
+#include <rclcpp_action/rclcpp_action.hpp>
+// #include <mbf_msgs/action/move_base.hpp>           // If using MoveBase action
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>  // geometry_msgs <→> tf2 interoperability
+
+
 namespace astar_octo_planner
 {
 
@@ -176,6 +183,15 @@ private:
     // defines the vertex cost limit with which it can be accessed
     double cost_limit = 1.0;
   } config_;
+
+  // For Rivz2 Goal Pose
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  rclcpp_action::Client<mbf_msgs::action::GetPath>::SharedPtr      mbf_getpath_client_;
+  // rclcpp_action::Client<mbf_msgs::action::MoveBase>::SharedPtr     mbf_movebase_client_;  // If using
+  std::shared_ptr<tf2_ros::Buffer>  tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  geometry_msgs::msg::PoseStamped getCurrentPose(const std::string& target_frame, const std::string& source_frame);
+  void goalPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
   // Utility functions.
   geometry_msgs::msg::Point find_nearest_3d_point(geometry_msgs::msg::Point point, const std::vector<std::vector<std::vector<int>>>& array_3d);

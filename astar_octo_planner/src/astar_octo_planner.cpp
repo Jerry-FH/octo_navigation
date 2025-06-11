@@ -53,6 +53,12 @@
 
 #include <queue>
 
+#include <rclcpp_action/rclcpp_action.hpp>          // Action client
+// #include <mbf_msgs/action/move_base.hpp>            // If using MoveBase
+#include <tf2_ros/transform_listener.h>             // Get present pose
+#include <tf2_ros/buffer.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
 PLUGINLIB_EXPORT_CLASS(astar_octo_planner::AstarOctoPlanner, mbf_octo_core::OctoPlanner);
 
 namespace astar_octo_planner
@@ -359,6 +365,82 @@ std::vector<std::tuple<int, int, int>> AstarOctoPlanner::astar(const std::tuple<
   return {};  // Return empty path if no solution is found.
 }
 
+// For Rivz2
+geometry_msgs::msg::PoseStamped AstarOctoPlanner::getCurrentPose(
+  const std::string& target_frame, 
+  const std::string& source_frame)
+{
+  geometry_msgs::msg::PoseStamped pose;
+  try
+  {
+    // Time(0): latest available transform
+    auto transform = tf_buffer_->lookupTransform(target_frame, source_frame, rclcpp::Time(0));
+    
+    // Log the transform info
+    RCLCPP_INFO(node_->get_logger(), "Got transform from '%s' to '%s' at time %u.%u",
+      target_frame.c_str(), source_frame.c_str(),
+      transform.header.stamp.sec, transform.header.stamp.nanosec);
+
+    RCLCPP_INFO(node_->get_logger(),
+      "Translation: x=%.3f, y=%.3f, z=%.3f",
+      transform.transform.translation.x,
+      transform.transform.translation.y,
+      transform.transform.translation.z);
+
+    RCLCPP_INFO(node_->get_logger(),
+      "Rotation: x=%.3f, y=%.3f, z=%.3f, w=%.3f",
+      transform.transform.rotation.x,
+      transform.transform.rotation.y,
+      transform.transform.rotation.z,
+      transform.transform.rotation.w);
+
+    pose.header = transform.header;
+    pose.pose.position.x = transform.transform.translation.x;
+    pose.pose.position.y = transform.transform.translation.y;
+    pose.pose.position.z = transform.transform.translation.z;
+    pose.pose.orientation = transform.transform.rotation;
+  }
+  catch (const tf2::TransformException &ex)
+  {
+    RCLCPP_ERROR(node_->get_logger(), "TF Error: %s", ex.what());
+    pose.header.stamp = node_->get_clock()->now(); // fallback to current time
+    pose.header.frame_id = target_frame;
+    pose.pose.orientation.w = 1.0; // identity quaternion
+    pose.pose.position.x = pose.pose.position.y = pose.pose.position.z = 0.0;
+  }
+  return pose;
+}
+
+void AstarOctoPlanner::goalPoseCallback(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+{
+  using namespace std::chrono_literals;
+
+  // Wait MBF's GetPath action server
+  if (!mbf_getpath_client_->wait_for_action_server(0s)) {
+    RCLCPP_ERROR(node_->get_logger(), "GetPath action server not available!");
+    return;
+  }
+
+  // Target and start point
+  mbf_msgs::action::GetPath::Goal goal;
+  goal.target_pose = *msg;                                    // RViz's target pose
+  goal.start_pose  = getCurrentPose("map", "base_link");      // Present robot pose
+  goal.tolerance   = 0.1;
+  goal.planner     = "";      // Current global planner
+
+  auto opts = rclcpp_action::Client<
+                mbf_msgs::action::GetPath>::SendGoalOptions();
+  opts.goal_response_callback = [this](auto handle){
+      if (!handle) RCLCPP_ERROR(node_->get_logger(),"Goal rejected");
+      else         RCLCPP_INFO (node_->get_logger(),"Goal accepted");
+  };
+
+  mbf_getpath_client_->async_send_goal(goal, opts);
+}
+
+
+// Callback
 void AstarOctoPlanner::pointcloud2Callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   // Convert the ROS2 PointCloud2 message to a PCL point cloud.
@@ -442,6 +524,21 @@ bool AstarOctoPlanner::initialize(const std::string& plugin_name, const rclcpp::
   pointcloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/octomap_point_cloud_centers", 1,
       std::bind(&AstarOctoPlanner::pointcloud2Callback, this, std::placeholders::_1));
+
+  // For Rivz
+  // TF buffer / listener
+  tf_buffer_   = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+  // RViz target Pose subscribe
+  goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
+    "/goal_pose", 1,
+    std::bind(&AstarOctoPlanner::goalPoseCallback, this, std::placeholders::_1));
+
+  // MBF action client
+  mbf_getpath_client_ = rclcpp_action::create_client<
+                          mbf_msgs::action::GetPath>(
+    node_, "/move_base_flex/get_path");
 
   reconfiguration_callback_handle_ = node_->add_on_set_parameters_callback(
       std::bind(&AstarOctoPlanner::reconfigureCallback, this, std::placeholders::_1));
