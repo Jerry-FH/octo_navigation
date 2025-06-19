@@ -53,12 +53,6 @@
 
 #include <queue>
 
-#include <rclcpp_action/rclcpp_action.hpp>          // Action client
-// #include <mbf_msgs/action/move_base.hpp>            // If using MoveBase
-#include <tf2_ros/transform_listener.h>             // Get present pose
-#include <tf2_ros/buffer.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-
 PLUGINLIB_EXPORT_CLASS(astar_octo_planner::AstarOctoPlanner, mbf_octo_core::OctoPlanner);
 
 namespace astar_octo_planner
@@ -99,6 +93,9 @@ uint32_t AstarOctoPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start
               start.pose.position.x, start.pose.position.y, start.pose.position.z,
               start.header.frame_id.c_str());
 
+  RCLCPP_INFO(node_->get_logger(), "Goal position: x = %f, y = %f, z = %f, frame_id = %s",
+  goal.pose.position.x, goal.pose.position.y, goal.pose.position.z,
+  goal.header.frame_id.c_str());
   // Convert world coordinates to grid indices using the helper function.
   auto start_grid_pt = worldToGrid(start.pose.position);
   auto goal_grid_pt = worldToGrid(goal.pose.position);
@@ -250,14 +247,39 @@ bool AstarOctoPlanner::hasNoOccupiedCellsAbove(const std::tuple<int, int, int>& 
   return true; // No occupied cells found above
 }
 
-bool AstarOctoPlanner::isCylinderCollisionFree(const std::tuple<int, int, int>& coord, double radius) 
+bool AstarOctoPlanner::needToSquat(const std::tuple<int, int, int>& coord, 
+  double vertical_range, double squat_range,double fb_distance,double width)
+{
+  int x, y, z;
+  std::tie(x, y, z) = coord;
+
+  int x_min = x - static_cast<int>(fb_distance / voxel_size_);
+  int x_max = x + static_cast<int>(fb_distance / voxel_size_);
+  int y_min = y - static_cast<int>(width / voxel_size_);
+  int y_max = y + static_cast<int>(width / voxel_size_);
+  int z_min = z + static_cast<int>(vertical_range / voxel_size_);
+  int z_max = z + static_cast<int>(squat_range/ voxel_size_);
+  for (int y_check = y_min; y_check <= y_max; y_check= y_check+2){
+    for (int z_check = z_min; z_check <= z_max; ++z_check) {
+      if (isWithinBounds({x_min, y_check, z_check}) && isOccupied({x_min, y_check, z_check})) {
+        return true; // Found an occupied cell
+      }
+      if (isWithinBounds({x_max, y_check, z_check}) && isOccupied({x_max, y_check, z_check})) {
+        return true; // Found an occupied cell
+      }
+    }
+  }
+  return false; // No occupied cells found above
+}
+
+bool AstarOctoPlanner::isCylinderCollisionFree(const std::tuple<int, int, int>& coord, double radius,double min_z, double max_z) 
 {
   int x, y, z;
   std::tie(x, y, z) = coord;
 
   double grid_radius = radius / voxel_size_;
-  int grid_z_start = static_cast<int>(0.4 / voxel_size_);
-  int grid_z_end = static_cast<int>(0.6 / voxel_size_);
+  int grid_z_start = static_cast<int>(min_z / voxel_size_);
+  int grid_z_end = static_cast<int>(max_z / voxel_size_); 
 
   int num_points = static_cast<int>(2 * M_PI * grid_radius);
 
@@ -313,10 +335,40 @@ std::vector<std::tuple<int, int, int>> AstarOctoPlanner::astar(const std::tuple<
 
     if (current.coord == goal) {
       std::vector<std::tuple<int, int, int>> path;
+      std::vector<std::tuple<int, int, int>> Squat_path;
       auto node = current.coord;
       while (came_from.find(node) != came_from.end()) {
+        bool Squatflag = needToSquat(node,max_vertical_clearance_,max_vertical_squat_,squat_x,squat_y);
+        if (Squatflag){
+          int x, y, z;
+          std::tie(x, y, z) = node;
+          RCLCPP_INFO(node_->get_logger(), "point need to Squat : x = %d, y = %d, z = %d,",x,y,z);
+          Squat_path.push_back(node);
+        }
         path.push_back(node);
         node = came_from[node];
+      }
+      if (!Squat_path.empty()) {
+        // Convert grid path back to world coordinates and build the plan.
+        std::vector<geometry_msgs::msg::PoseStamped> plan_squat;
+        plan_squat.clear();
+        for (const auto& grid_pt : Squat_path) {
+          auto world_pt = gridToWorld(grid_pt);
+          geometry_msgs::msg::PoseStamped pose;
+          pose.header.frame_id = "map";  // Use same frame and timestamp
+          pose.pose.position.x = world_pt[0];
+          pose.pose.position.y = world_pt[1];
+          pose.pose.position.z = world_pt[2];
+          pose.pose.orientation.w = 1.0;  // Default orientation
+          plan_squat.push_back(pose);
+        }
+        std::reverse(plan_squat.begin(), plan_squat.end());   // start → goal
+        // Publish the path for visualization.
+        nav_msgs::msg::Path path_msg;
+        path_msg.header.stamp = node_->now();
+        path_msg.header.frame_id = "odom";
+        path_msg.poses = plan_squat;
+        Squat_path_pub_ ->publish(path_msg);
       }
       path.push_back(start);
       std::reverse(path.begin(), path.end());
@@ -334,7 +386,7 @@ std::vector<std::tuple<int, int, int>> AstarOctoPlanner::astar(const std::tuple<
       if (!isWithinBounds(neighbor))
         continue;
 
-      if (!isOccupied(neighbor))
+      if (!isOccupied(neighbor)) //if the neighbors is obstacle then pass it
         continue;
 
       // Check if neighbor is within certain Z distance
@@ -346,7 +398,7 @@ std::vector<std::tuple<int, int, int>> AstarOctoPlanner::astar(const std::tuple<
       if (z_diff > z_constraint)
         continue;
 
-      if (!isCylinderCollisionFree(neighbor, robot_radius_))
+      if (!isCylinderCollisionFree(neighbor, robot_radius_,min_vertical_clearance_,max_vertical_clearance_))
         continue;
 
       if (!hasNoOccupiedCellsAbove(neighbor, min_vertical_clearance_, max_vertical_clearance_))
@@ -365,82 +417,6 @@ std::vector<std::tuple<int, int, int>> AstarOctoPlanner::astar(const std::tuple<
   return {};  // Return empty path if no solution is found.
 }
 
-// For Rivz2
-geometry_msgs::msg::PoseStamped AstarOctoPlanner::getCurrentPose(
-  const std::string& target_frame, 
-  const std::string& source_frame)
-{
-  geometry_msgs::msg::PoseStamped pose;
-  try
-  {
-    // Time(0): latest available transform
-    auto transform = tf_buffer_->lookupTransform(target_frame, source_frame, rclcpp::Time(0));
-    
-    // Log the transform info
-    RCLCPP_INFO(node_->get_logger(), "Got transform from '%s' to '%s' at time %u.%u",
-      target_frame.c_str(), source_frame.c_str(),
-      transform.header.stamp.sec, transform.header.stamp.nanosec);
-
-    RCLCPP_INFO(node_->get_logger(),
-      "Translation: x=%.3f, y=%.3f, z=%.3f",
-      transform.transform.translation.x,
-      transform.transform.translation.y,
-      transform.transform.translation.z);
-
-    RCLCPP_INFO(node_->get_logger(),
-      "Rotation: x=%.3f, y=%.3f, z=%.3f, w=%.3f",
-      transform.transform.rotation.x,
-      transform.transform.rotation.y,
-      transform.transform.rotation.z,
-      transform.transform.rotation.w);
-
-    pose.header = transform.header;
-    pose.pose.position.x = transform.transform.translation.x;
-    pose.pose.position.y = transform.transform.translation.y;
-    pose.pose.position.z = transform.transform.translation.z;
-    pose.pose.orientation = transform.transform.rotation;
-  }
-  catch (const tf2::TransformException &ex)
-  {
-    RCLCPP_ERROR(node_->get_logger(), "TF Error: %s", ex.what());
-    pose.header.stamp = node_->get_clock()->now(); // fallback to current time
-    pose.header.frame_id = target_frame;
-    pose.pose.orientation.w = 1.0; // identity quaternion
-    pose.pose.position.x = pose.pose.position.y = pose.pose.position.z = 0.0;
-  }
-  return pose;
-}
-
-void AstarOctoPlanner::goalPoseCallback(
-    const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-{
-  using namespace std::chrono_literals;
-
-  // Wait MBF's GetPath action server
-  if (!mbf_getpath_client_->wait_for_action_server(0s)) {
-    RCLCPP_ERROR(node_->get_logger(), "GetPath action server not available!");
-    return;
-  }
-
-  // Target and start point
-  mbf_msgs::action::GetPath::Goal goal;
-  goal.target_pose = *msg;                                    // RViz's target pose
-  goal.start_pose  = getCurrentPose("map", "base_link");      // Present robot pose
-  goal.tolerance   = 0.1;
-  goal.planner     = "";      // Current global planner
-
-  auto opts = rclcpp_action::Client<
-                mbf_msgs::action::GetPath>::SendGoalOptions();
-  opts.goal_response_callback = [this](auto handle){
-      if (!handle) RCLCPP_ERROR(node_->get_logger(),"Goal rejected");
-      else         RCLCPP_INFO (node_->get_logger(),"Goal accepted");
-  };
-
-  mbf_getpath_client_->async_send_goal(goal, opts);
-}
-
-
-// Callback
 void AstarOctoPlanner::pointcloud2Callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   // Convert the ROS2 PointCloud2 message to a PCL point cloud.
@@ -520,26 +496,12 @@ bool AstarOctoPlanner::initialize(const std::string& plugin_name, const rclcpp::
 
   path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("~/path", rclcpp::QoS(1).transient_local());
 
+  Squat_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("~/Squatpath", rclcpp::QoS(1).transient_local());
   // Create a subscription to the point cloud topic.
   pointcloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/octomap_point_cloud_centers", 1,
       std::bind(&AstarOctoPlanner::pointcloud2Callback, this, std::placeholders::_1));
-
-  // For Rivz
-  // TF buffer / listener
-  tf_buffer_   = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-  // RViz target Pose subscribe
-  goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
-    "/goal_pose", 1,
-    std::bind(&AstarOctoPlanner::goalPoseCallback, this, std::placeholders::_1));
-
-  // MBF action client
-  mbf_getpath_client_ = rclcpp_action::create_client<
-                          mbf_msgs::action::GetPath>(
-    node_, "/move_base_flex/get_path");
-
+  
   reconfiguration_callback_handle_ = node_->add_on_set_parameters_callback(
       std::bind(&AstarOctoPlanner::reconfigureCallback, this, std::placeholders::_1));
 

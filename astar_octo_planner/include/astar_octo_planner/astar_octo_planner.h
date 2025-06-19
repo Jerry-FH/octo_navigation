@@ -45,13 +45,6 @@
 #include <mbf_octo_core/octo_planner.h>
 #include <mbf_msgs/action/get_path.hpp>
 
-#include <rclcpp_action/rclcpp_action.hpp>
-// #include <mbf_msgs/action/move_base.hpp>           // If using MoveBase action
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>  // geometry_msgs <→> tf2 interoperability
-
-
 namespace astar_octo_planner
 {
 
@@ -168,6 +161,8 @@ private:
   std::atomic_bool cancel_planning_;
   // publisher of resulting path
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  // publisher of the path neef to Squat
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr Squat_path_pub_;
   // tf frame of the map
   std::string map_frame_;
   // handle of callback for changing parameters dynamically
@@ -184,15 +179,6 @@ private:
     double cost_limit = 1.0;
   } config_;
 
-  // For Rivz2 Goal Pose
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
-  rclcpp_action::Client<mbf_msgs::action::GetPath>::SharedPtr      mbf_getpath_client_;
-  // rclcpp_action::Client<mbf_msgs::action::MoveBase>::SharedPtr     mbf_movebase_client_;  // If using
-  std::shared_ptr<tf2_ros::Buffer>  tf_buffer_;
-  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-  geometry_msgs::msg::PoseStamped getCurrentPose(const std::string& target_frame, const std::string& source_frame);
-  void goalPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
-
   // Utility functions.
   geometry_msgs::msg::Point find_nearest_3d_point(geometry_msgs::msg::Point point, const std::vector<std::vector<std::vector<int>>>& array_3d);
   geometry_msgs::msg::Point worldToGrid(const geometry_msgs::msg::Point & point);
@@ -202,7 +188,9 @@ private:
   bool isOccupied(const std::tuple<int, int, int>& pt);
   bool hasNoOccupiedCellsAbove(const std::tuple<int, int, int>& coord, 
                                                 double vertical_min, double vertical_range);
-  bool isCylinderCollisionFree(const std::tuple<int, int, int>& coord, double radius);
+  bool needToSquat(const std::tuple<int, int, int>& coord, 
+                                                double vertical_range, double squat_range,double fb_distance,double width);  
+  bool isCylinderCollisionFree(const std::tuple<int, int, int>& coord, double radius, double min_z, double max_z);
   std::vector<std::tuple<int, int, int>> astar(const std::tuple<int, int, int>& start,
                                                const std::tuple<int, int, int>& goal);
 
@@ -219,8 +207,10 @@ private:
   double z_threshold_;
   double robot_radius_ = 0.35;
   double min_vertical_clearance_ = 0.4;
-  double max_vertical_clearance_ = 0.6;
-
+  double max_vertical_clearance_ = 0.6; 
+  double squat_x = 0.7;
+  double squat_y = 0.2 ;
+  double max_vertical_squat_ = 1.0;
   // Minimum bound for the occupancy grid.
   std::array<double, 3> min_bound_;
 

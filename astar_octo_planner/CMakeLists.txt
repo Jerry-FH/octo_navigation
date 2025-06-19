@@ -6,14 +6,12 @@ find_package(mbf_octo_core REQUIRED)
 find_package(mbf_msgs REQUIRED)
 find_package(mbf_utility REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
-find_package(tf2_ros REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
+find_package(webots_spot_msgs REQUIRED)
 
 pluginlib_export_plugin_description_file(mbf_octo_core astar_octo_planner.xml)
 
@@ -28,18 +26,13 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 target_compile_definitions(${PROJECT_NAME} PRIVATE "ASTAR_OCTO_PLANNER_BUILDING_LIBRARY")
 ament_target_dependencies(${PROJECT_NAME} 
- mbf_octo_core
- mbf_msgs 
- mbf_utility 
- rclcpp 
- pluginlib 
- sensor_msgs 
- pcl_conversions
- rclcpp_action
- tf2_ros
- tf2_geometry_msgs
- nav_msgs
- geometry_msgs)
+  mbf_octo_core 
+  mbf_msgs 
+  mbf_utility 
+  rclcpp 
+  pluginlib 
+  sensor_msgs 
+  pcl_conversions)
 target_link_libraries(${PROJECT_NAME}
     ${MPI_CXX_LIBRARIES}
 )
@@ -54,6 +47,37 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION bin
 )
 
+# new node
+add_executable(rviz_goal_sender_node src/rviz_goal_sender_node.cpp) 
+ament_target_dependencies(rviz_goal_sender_node
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  mbf_msgs
+)
+install(TARGETS rviz_goal_sender_node
+ DESTINATION lib/${PROJECT_NAME}
+)
+
+# new service
+add_executable(posture_manager src/posture_manager.cpp)
+ament_target_dependencies(posture_manager
+  rclcpp 
+  nav_msgs 
+  geometry_msgs 
+  mbf_octo_core 
+  mbf_msgs 
+  mbf_utility 
+  webots_spot_msgs)
+install(TARGETS posture_manager
+ DESTINATION lib/${PROJECT_NAME}
+)
+
+
+
+find_package(ament_cmake_auto REQUIRED)
+
+
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
 ament_export_targets(export_${PROJECT_NAME})
@@ -61,13 +85,7 @@ ament_export_dependencies(
   mbf_octo_core 
   mbf_msgs 
   mbf_utility 
-  rclcpp 
-  rclcpp_action
-  tf2_ros
-  tf2_geometry_msgs
-  nav_msgs
-  geometry_msgs
-  sensor_msgs
-  pcl_conversions
-  pluginlib)
+  rclcpp pluginlib 
+  clcpp_action 
+  geometry_msgs)
 ament_package()
