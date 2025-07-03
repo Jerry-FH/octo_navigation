@@ -13,7 +13,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     # path to this pkg
-    pkg_bring_up = get_package_share_directory("bring_up")
+    pkg_bring_up = get_package_share_directory("bring_up_alert_nav")
 
     # Launch arguments
 
