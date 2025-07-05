@@ -47,7 +47,6 @@
 #include <array>
 #include <cmath>
 #include <utility>
-#include <rclcpp_action/rclcpp_action.hpp> // Action
 #include <mbf_msgs/action/move_base.hpp>
 
 #include <mbf_msgs/action/get_path.hpp>
@@ -57,6 +56,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <queue>
+#include <chrono>
 
 #define SmoothPath 1
 
@@ -95,6 +95,8 @@ uint32_t Astar2dPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start,
               start.pose.position.x, start.pose.position.y, start.pose.position.z,
               start.header.frame_id.c_str());
 
+  auto t_start = std::chrono::steady_clock::now();
+
   // 1) check if receiving map
   if (occ_grid_.empty()) {
     RCLCPP_ERROR(node_->get_logger(), "No map received yet.");
@@ -115,6 +117,9 @@ uint32_t Astar2dPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start,
 
   // 3) A*
   auto grid_path = astar({sx,sy}, {gx,gy});
+  auto t_after_astar = std::chrono::steady_clock::now();
+  auto astar_time = std::chrono::duration<double, std::milli>(t_after_astar - t_start).count();
+  RCLCPP_INFO(node_->get_logger(), "A* planning time: %.3f ms", astar_time);
   if (grid_path.empty()) {
     RCLCPP_ERROR(node_->get_logger(), "No path found using A*.");
     return mbf_msgs::action::GetPath::Result::FAILURE;
@@ -142,6 +147,8 @@ uint32_t Astar2dPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start,
   RCLCPP_INFO_STREAM(node_->get_logger(), "Path found with length: " << cost << " steps");
   
   // 6) Do smooth path
+  size_t raw_path_len = plan.size();
+  auto t_before_smooth = std::chrono::steady_clock::now();
   if(SmoothPath)
   {
     auto smooth_grid = pruneAndShortcut(grid_path);
@@ -175,7 +182,10 @@ uint32_t Astar2dPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start,
       plan.push_back(ps);
     }
   }
-  
+
+  auto t_after_smooth = std::chrono::steady_clock::now();
+  auto smooth_time = std::chrono::duration<double, std::milli>(t_after_smooth - t_before_smooth).count();
+
   // 6-3) Publish smooth Path
   if(SmoothPath)
   {
@@ -186,6 +196,10 @@ uint32_t Astar2dPlanner::makePlan(const geometry_msgs::msg::PoseStamped& start,
     cost = static_cast<double>(plan.size());
     RCLCPP_INFO_STREAM(node_->get_logger(), "Smooth Path found with length: " << cost << " steps");
   }
+
+  RCLCPP_INFO(node_->get_logger(),
+              "Path points: %zu -> %zu, smoothing time: %.3f ms",
+              raw_path_len, plan.size(), smooth_time);
 
   return mbf_msgs::action::GetPath::Result::SUCCESS;
 }
