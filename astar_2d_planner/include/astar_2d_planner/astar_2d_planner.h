@@ -210,10 +210,6 @@ private:
       astar(const std::pair<int,int>& start,
             const std::pair<int,int>& goal);
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-  void goalPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
-  rclcpp_action::Client<mbf_msgs::action::MoveBase>::SharedPtr      mbf_client_;
-  rclcpp_action::Client<mbf_msgs::action::GetPath>::SharedPtr      mbf_getpath_client_;
   
   // Utility functions of the 3D Planner.
   // // Callback for point cloud subscription.
